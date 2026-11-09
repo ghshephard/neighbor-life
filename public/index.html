@@ -24,6 +24,7 @@
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   button:disabled { opacity: .4; cursor: default; }
   input[type=number] { width: 70px; font: inherit; padding: 4px; }
+  select { flex: 1; font: inherit; padding: 4px; }
   .color-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
   .color-head { display: flex; align-items: center; gap: 8px; }
   .color-head input[type=color] { width: 28px; height: 28px; border: none; padding: 0; background: none; cursor: pointer; }
@@ -67,7 +68,15 @@
       <input type="range" id="far" min="0" max="0.5" step="0.01" value="0.5">
       <span class="val" id="far-val"></span>
     </div>
-    <p class="note">Only squares of the same color count as neighbors. Neighbor score = same-color touching squares &times; 1 + same-color squares two away &times; the two-away weight (max 8 + 16 &times; weight). A square is satisfied when its score is at least its color's target. An unsatisfied square may jump to an empty square where it would be satisfied, or, if there is none, to the empty square with the most same-color neighbors when that beats its current spot.</p>
+    <div class="row">
+      <label for="fallback">If no match</label>
+      <select id="fallback">
+        <option value="stay">Stay put</option>
+        <option value="best" selected>Jump to best square</option>
+        <option value="random">Jump to random square</option>
+      </select>
+    </div>
+    <p class="note">Only squares of the same color count as neighbors. Neighbor score = same-color touching squares &times; 1 + same-color squares two away &times; the two-away weight (max 8 + 16 &times; weight). A square is satisfied when its score is at least its color's target. An unsatisfied square may jump to an empty square where it would be satisfied. If there is none, "If no match" decides: stay put, jump to the empty square with the most same-color neighbors (only when that beats its current spot), or jump to a random empty square.</p>
 
     <h2>Grid <span class="note">(applies on reset)</span></h2>
     <div class="row">
@@ -117,7 +126,7 @@ const OW = new Int32Array(ODX.length);
 
 const state = {
   W: 100, H: 100,
-  emptyPct: 10, jumpPct: 50, speed: 10, farWeight: 0.5,
+  emptyPct: 10, jumpPct: 50, speed: 10, farWeight: 0.5, fallback: 'best',
   colors: PALETTE.slice(0, 3).map(([name, hex]) => ({ name, hex, target: 3, mix: 100 })),
   running: false, stepCount: 0, lastMoves: 0,
 };
@@ -243,18 +252,21 @@ function step() {
     adjust(i, c, -1);
     pushEmpty(i);
 
-    // Aim for any empty square that meets the target; if none does, the best-scoring empty square,
-    // but only when it beats staying put (otherwise squares would hop between equally bad spots).
+    // Aim for any empty square that meets the target. In "best" mode, fall back to the best-scoring
+    // empty square, but only when it beats staying put (otherwise squares would hop between equally bad spots).
     let best = MAX_SCORE;
     while (best > 0 && !hist[best]) best--;
-    const aim = Math.min(need, best);
+    const aim = state.fallback === 'best' ? Math.min(need, best) : need;
     let dest = -1;
-    if (aim > score[i]) {
+    if (aim > score[i] && best >= aim) {
       const start = (Math.random() * emptyCount) | 0;
       for (let t = 0; t < emptyCount; t++) {
         const e = emptyList[(start + t) % emptyCount];
         if (score[e] >= aim) { dest = e; break; }
       }
+    }
+    if (dest < 0 && state.fallback === 'random' && emptyCount > 1) {
+      do dest = emptyList[(Math.random() * emptyCount) | 0]; while (dest === i);
     }
     if (dest < 0) dest = i;
 
@@ -358,6 +370,9 @@ bindSlider('speed', 'speed', v => v);
 bindSlider('jump', 'jumpPct', v => v + '%');
 bindSlider('empty', 'emptyPct', v => v + '%');
 bindSlider('far', 'farWeight', v => v.toFixed(2));
+const fallbackSel = document.getElementById('fallback');
+fallbackSel.value = state.fallback;
+fallbackSel.addEventListener('change', () => { state.fallback = fallbackSel.value; });
 applyWeights();
 document.getElementById('far').addEventListener('input', () => {
   applyWeights();
