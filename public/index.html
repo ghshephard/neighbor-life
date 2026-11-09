@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Neighbor Seekers: a Game of Life variant</title>
+<style>
+  :root { --bg: #fafafa; --panel: #ffffff; --border: #ddd; --text: #222; --muted: #777; --accent: #1e88e5; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  main { display: flex; height: 100vh; }
+  #board-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; min-width: 0; }
+  #board { image-rendering: pixelated; border: 1px solid #999; background: #f2f2f2; cursor: crosshair; }
+  #hover { height: 20px; margin-top: 8px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  aside { width: 340px; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--border); padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 20px 0 8px; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .row label { flex: 0 0 120px; }
+  .row input[type=range] { flex: 1; }
+  .val { flex: 0 0 44px; text-align: right; font-variant-numeric: tabular-nums; }
+  .note { color: var(--muted); font-size: 12px; }
+  button { font: inherit; padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px; background: #fff; cursor: pointer; }
+  button:hover { background: #f0f0f0; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  input[type=number] { width: 70px; font: inherit; padding: 4px; }
+  .color-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+  .color-head { display: flex; align-items: center; gap: 8px; }
+  .color-head input[type=color] { width: 28px; height: 28px; border: none; padding: 0; background: none; cursor: pointer; }
+  .color-head input[type=text] { flex: 1; font: inherit; padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; }
+  .color-card .row label { flex-basis: 70px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 3px 4px; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: middle; border: 1px solid #0003; }
+</style>
+</head>
+<body>
+<main>
+  <div id="board-wrap">
+    <canvas id="board"></canvas>
+    <div id="hover"></div>
+  </div>
+  <aside>
+    <h1>Neighbor Seekers</h1>
+
+    <div class="row">
+      <button id="play" class="primary">Play</button>
+      <button id="step">Step</button>
+      <button id="reset">Reset</button>
+    </div>
+    <div class="row">
+      <label for="speed">Speed (steps/s)</label>
+      <input type="range" id="speed" min="1" max="60" value="10">
+      <span class="val" id="speed-val"></span>
+    </div>
+
+    <h2>Rules</h2>
+    <div class="row">
+      <label for="jump">Jump probability</label>
+      <input type="range" id="jump" min="0" max="100" value="50">
+      <span class="val" id="jump-val"></span>
+    </div>
+    <div class="row">
+      <label for="far">Two-away weight</label>
+      <input type="range" id="far" min="0" max="0.5" step="0.01" value="0.5">
+      <span class="val" id="far-val"></span>
+    </div>
+    <p class="note">Only squares of the same color count as neighbors. Neighbor score = same-color touching squares &times; 1 + same-color squares two away &times; the two-away weight (max 8 + 16 &times; weight). A square is satisfied when its score is at least its color's target. An unsatisfied square may jump to an empty square where it would be satisfied, or, if there is none, to the empty square with the most same-color neighbors when that beats its current spot.</p>
+
+    <h2>Grid <span class="note">(applies on reset)</span></h2>
+    <div class="row">
+      <label>Size</label>
+      <input type="number" id="width" min="5" max="500" value="100"> &times;
+      <input type="number" id="height" min="5" max="500" value="100">
+    </div>
+    <div class="row">
+      <label for="empty">Empty squares</label>
+      <input type="range" id="empty" min="0" max="90" value="10">
+      <span class="val" id="empty-val"></span>
+    </div>
+
+    <h2>Colors</h2>
+    <p class="note">Target applies live. Mix applies on reset. Adding or removing a color resets the grid.</p>
+    <div id="colors"></div>
+    <button id="add-color">+ Add color</button>
+
+    <h2>Stats</h2>
+    <div class="row note" id="summary"></div>
+    <table>
+      <thead><tr><th>Color</th><th>Count</th><th>Satisfied</th></tr></thead>
+      <tbody id="stats"></tbody>
+    </table>
+  </aside>
+</main>
+
+<script>
+const PALETTE = [
+  ['Red', '#e53935'], ['Blue', '#1e88e5'], ['Black', '#111111'], ['Green', '#43a047'],
+  ['Orange', '#fb8c00'], ['Purple', '#8e24aa'], ['Teal', '#00acc1'], ['Yellow', '#f4c20d'],
+];
+const EMPTY_RGB = [242, 242, 242];
+// Scores are stored in hundredths so fractional weights stay integers: touching = 100, two away = 0..50.
+const SCALE = 100;
+const MAX_SCORE = 8 * SCALE + 16 * SCALE / 2;
+
+const ODX = [], ODY = [], ORING = [];
+for (let dy = -2; dy <= 2; dy++) {
+  for (let dx = -2; dx <= 2; dx++) {
+    if (!dx && !dy) continue;
+    ODX.push(dx); ODY.push(dy);
+    ORING.push(Math.max(Math.abs(dx), Math.abs(dy)));
+  }
+}
+const OW = new Int32Array(ODX.length);
+
+const state = {
+  W: 100, H: 100,
+  emptyPct: 10, jumpPct: 50, speed: 10, farWeight: 0.5,
+  colors: PALETTE.slice(0, 3).map(([name, hex]) => ({ name, hex, target: 3, mix: 100 })),
+  running: false, stepCount: 0, lastMoves: 0,
+};
+
+// scores[k][i] is the weighted count of color k+1 around square i; only same-color squares are neighbors.
+// emptyHists[k][s] counts empty squares whose color-k score is s.
+let cells, scores, emptyList, emptyPos, emptyCount, emptyHists, order, moved;
+
+function pushEmpty(i) {
+  emptyPos[i] = emptyCount;
+  emptyList[emptyCount++] = i;
+  for (let k = 0; k < scores.length; k++) emptyHists[k][scores[k][i]]++;
+}
+
+function removeEmpty(i) {
+  const p = emptyPos[i];
+  const last = emptyList[--emptyCount];
+  emptyList[p] = last;
+  emptyPos[last] = p;
+  emptyPos[i] = -1;
+  for (let k = 0; k < scores.length; k++) emptyHists[k][scores[k][i]]--;
+}
+
+function adjust(i, c, sign) {
+  const { W, H } = state;
+  const score = scores[c - 1], hist = emptyHists[c - 1];
+  const x = i % W, y = (i - x) / W;
+  for (let k = 0; k < ODX.length; k++) {
+    const nx = x + ODX[k], ny = y + ODY[k];
+    if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+    const j = ny * W + nx;
+    const isEmpty = emptyPos[j] >= 0;
+    if (isEmpty) hist[score[j]]--;
+    score[j] += sign * OW[k];
+    if (isEmpty) hist[score[j]]++;
+  }
+}
+
+function applyWeights() {
+  const far = Math.round(state.farWeight * SCALE);
+  for (let k = 0; k < OW.length; k++) OW[k] = ORING[k] === 1 ? SCALE : far;
+}
+
+function recomputeScores() {
+  for (let k = 0; k < scores.length; k++) {
+    scores[k].fill(0);
+    emptyHists[k].fill(0);
+    emptyHists[k][0] = emptyCount;
+  }
+  for (let i = 0; i < cells.length; i++) if (cells[i]) adjust(i, cells[i], +1);
+}
+
+function needFor(c) { return Math.round(state.colors[c - 1].target * SCALE); }
+
+function shuffle(arr, n = arr.length) {
+  for (let i = n - 1; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+  }
+}
+
+function reset() {
+  state.W = clampInt(+document.getElementById('width').value, 5, 500);
+  state.H = clampInt(+document.getElementById('height').value, 5, 500);
+  document.getElementById('width').value = state.W;
+  document.getElementById('height').value = state.H;
+
+  const N = state.W * state.H;
+  cells = new Uint8Array(N);
+  scores = state.colors.map(() => new Int32Array(N));
+  emptyHists = state.colors.map(() => new Int32Array(MAX_SCORE + 1));
+  emptyList = new Int32Array(N);
+  emptyPos = new Int32Array(N).fill(-1);
+  emptyCount = 0;
+  moved = new Uint8Array(N);
+  order = new Int32Array(N);
+  for (let i = 0; i < N; i++) order[i] = i;
+
+  // Exact empty count, then split the rest among colors by mix weight (largest remainder).
+  const numEmpty = Math.round(N * state.emptyPct / 100);
+  const occupied = N - numEmpty;
+  const allZero = state.colors.every(c => !c.mix);
+  const weights = state.colors.map(c => allZero ? 1 : c.mix);
+  const totalW = weights.reduce((a, b) => a + b, 0);
+  const raw = weights.map(w => w / totalW * occupied);
+  const counts = raw.map(Math.floor);
+  let leftover = occupied - counts.reduce((a, b) => a + b, 0);
+  raw.map((r, k) => [r - Math.floor(r), k]).sort((a, b) => b[0] - a[0])
+     .forEach(([, k]) => { if (leftover > 0) { counts[k]++; leftover--; } });
+
+  let p = numEmpty;
+  counts.forEach((n, k) => { for (let t = 0; t < n; t++) cells[p++] = k + 1; });
+  shuffle(cells);
+
+  for (let i = 0; i < N; i++) if (cells[i]) adjust(i, cells[i], +1);
+  for (let i = 0; i < N; i++) if (!cells[i]) pushEmpty(i);
+
+  state.stepCount = 0;
+  state.lastMoves = 0;
+  layoutCanvas();
+  render();
+  updateStats();
+}
+
+function step() {
+  const N = state.W * state.H;
+  const p = state.jumpPct / 100;
+  shuffle(order);
+  moved.fill(0);
+  let moves = 0;
+
+  for (let k = 0; k < N; k++) {
+    const i = order[k];
+    const c = cells[i];
+    if (!c || moved[i]) continue;
+    const need = needFor(c);
+    const score = scores[c - 1], hist = emptyHists[c - 1];
+    if (score[i] >= need) continue;
+    if (Math.random() >= p) continue;
+
+    // Vacate first so the square doesn't count itself at its destination.
+    cells[i] = 0;
+    adjust(i, c, -1);
+    pushEmpty(i);
+
+    // Aim for any empty square that meets the target; if none does, the best-scoring empty square,
+    // but only when it beats staying put (otherwise squares would hop between equally bad spots).
+    let best = MAX_SCORE;
+    while (best > 0 && !hist[best]) best--;
+    const aim = Math.min(need, best);
+    let dest = -1;
+    if (aim > score[i]) {
+      const start = (Math.random() * emptyCount) | 0;
+      for (let t = 0; t < emptyCount; t++) {
+        const e = emptyList[(start + t) % emptyCount];
+        if (score[e] >= aim) { dest = e; break; }
+      }
+    }
+    if (dest < 0) dest = i;
+
+    removeEmpty(dest);
+    cells[dest] = c;
+    adjust(dest, c, +1);
+    if (dest !== i) { moved[dest] = 1; moves++; }
+  }
+
+  state.stepCount++;
+  state.lastMoves = moves;
+}
+
+// ---------- Rendering ----------
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+const off = document.createElement('canvas');
+const offCtx = off.getContext('2d');
+let cellPx = 1;
+
+function layoutCanvas() {
+  const wrap = document.getElementById('board-wrap');
+  const availW = wrap.clientWidth - 32, availH = wrap.clientHeight - 60;
+  cellPx = Math.max(1, Math.floor(Math.min(availW / state.W, availH / state.H)));
+  canvas.width = state.W * cellPx;
+  canvas.height = state.H * cellPx;
+  off.width = state.W;
+  off.height = state.H;
+}
+
+function hexToRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function render() {
+  const N = state.W * state.H;
+  const img = offCtx.createImageData(state.W, state.H);
+  const d = img.data;
+  const rgbs = [EMPTY_RGB, ...state.colors.map(c => hexToRgb(c.hex))];
+  for (let i = 0; i < N; i++) {
+    const rgb = rgbs[cells[i]];
+    d[i * 4] = rgb[0]; d[i * 4 + 1] = rgb[1]; d[i * 4 + 2] = rgb[2]; d[i * 4 + 3] = 255;
+  }
+  offCtx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, 0, 0, canvas.width, canvas.height);
+}
+
+function updateStats() {
+  const n = state.colors.length;
+  const count = new Array(n).fill(0), happy = new Array(n).fill(0);
+  const N = state.W * state.H;
+  for (let i = 0; i < N; i++) {
+    const c = cells[i];
+    if (!c) continue;
+    count[c - 1]++;
+    if (scores[c - 1][i] >= needFor(c)) happy[c - 1]++;
+  }
+  const pct = (a, b) => b ? (100 * a / b).toFixed(1) + '%' : '-';
+  const totalCount = count.reduce((a, b) => a + b, 0);
+  const totalHappy = happy.reduce((a, b) => a + b, 0);
+  document.getElementById('stats').innerHTML = state.colors.map((c, k) =>
+    `<tr><td><span class="swatch" style="background:${c.hex}"></span>${escapeHtml(c.name)}</td>` +
+    `<td>${count[k]}</td><td>${pct(happy[k], count[k])}</td></tr>`
+  ).join('') + `<tr><td><b>All</b></td><td><b>${totalCount}</b></td><td><b>${pct(totalHappy, totalCount)}</b></td></tr>`;
+  document.getElementById('summary').textContent =
+    `Step ${state.stepCount} · ${state.lastMoves} moves last step · ${emptyCount} empty`;
+}
+
+// ---------- Hover info ----------
+canvas.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  const x = Math.floor((e.clientX - r.left) / cellPx), y = Math.floor((e.clientY - r.top) / cellPx);
+  if (x < 0 || y < 0 || x >= state.W || y >= state.H) return;
+  const i = y * state.W + x, c = cells[i];
+  const fmt = s => +(s / SCALE).toFixed(2);
+  let text = `(${x}, ${y})`;
+  if (c) {
+    const col = state.colors[c - 1], s = scores[c - 1][i];
+    text += ` · ${col.name} · score ${fmt(s)}, target ${col.target} · ${s >= needFor(c) ? 'satisfied' : 'unsatisfied'}`;
+  } else {
+    text += ' · empty · ' + state.colors.map((col, k) => `${col.name} ${fmt(scores[k][i])}`).join(', ');
+  }
+  document.getElementById('hover').textContent = text;
+});
+canvas.addEventListener('mouseleave', () => { document.getElementById('hover').textContent = ''; });
+
+// ---------- Controls ----------
+function clampInt(v, lo, hi) { return Math.min(hi, Math.max(lo, Math.round(v) || lo)); }
+function escapeHtml(s) { return s.replace(/[&<>"']/g, ch => `&#${ch.charCodeAt(0)};`); }
+
+function bindSlider(id, key, fmt) {
+  const el = document.getElementById(id), out = document.getElementById(id + '-val');
+  el.value = state[key];
+  const update = () => { state[key] = +el.value; out.textContent = fmt(state[key]); };
+  el.addEventListener('input', update);
+  update();
+}
+bindSlider('speed', 'speed', v => v);
+bindSlider('jump', 'jumpPct', v => v + '%');
+bindSlider('empty', 'emptyPct', v => v + '%');
+bindSlider('far', 'farWeight', v => v.toFixed(2));
+applyWeights();
+document.getElementById('far').addEventListener('input', () => {
+  applyWeights();
+  recomputeScores();
+  updateStats();
+});
+
+const playBtn = document.getElementById('play');
+function setRunning(r) { state.running = r; playBtn.textContent = r ? 'Pause' : 'Play'; }
+playBtn.addEventListener('click', () => setRunning(!state.running));
+document.getElementById('step').addEventListener('click', () => { setRunning(false); step(); render(); updateStats(); });
+document.getElementById('reset').addEventListener('click', reset);
+document.getElementById('width').addEventListener('change', reset);
+document.getElementById('height').addEventListener('change', reset);
+
+function renderColorControls() {
+  const box = document.getElementById('colors');
+  box.innerHTML = '';
+  state.colors.forEach((c, k) => {
+    const card = document.createElement('div');
+    card.className = 'color-card';
+    card.innerHTML = `
+      <div class="color-head">
+        <input type="color" value="${c.hex}">
+        <input type="text" value="${escapeHtml(c.name)}">
+        <button title="Remove color" ${state.colors.length <= 1 ? 'disabled' : ''}>&times;</button>
+      </div>
+      <div class="row"><label>Target</label><input type="range" min="0" max="9" step="0.5" value="${c.target}"><span class="val">${c.target}</span></div>
+      <div class="row"><label>Mix</label><input type="range" min="0" max="100" value="${c.mix}"><span class="val">${c.mix}</span></div>`;
+    const [colorIn, nameIn] = card.querySelectorAll('.color-head input');
+    const removeBtn = card.querySelector('.color-head button');
+    const [targetIn, mixIn] = card.querySelectorAll('input[type=range]');
+    const [targetVal, mixVal] = card.querySelectorAll('.val');
+    colorIn.addEventListener('input', () => { c.hex = colorIn.value; render(); updateStats(); });
+    nameIn.addEventListener('input', () => { c.name = nameIn.value; updateStats(); });
+    targetIn.addEventListener('input', () => { c.target = +targetIn.value; targetVal.textContent = c.target; updateStats(); });
+    mixIn.addEventListener('input', () => { c.mix = +mixIn.value; mixVal.textContent = c.mix; });
+    removeBtn.addEventListener('click', () => { state.colors.splice(k, 1); renderColorControls(); reset(); });
+    box.appendChild(card);
+  });
+  document.getElementById('add-color').disabled = state.colors.length >= PALETTE.length;
+}
+
+document.getElementById('add-color').addEventListener('click', () => {
+  const used = new Set(state.colors.map(c => c.hex));
+  const [name, hex] = PALETTE.find(([, h]) => !used.has(h)) || PALETTE[state.colors.length % PALETTE.length];
+  state.colors.push({ name, hex, target: 3, mix: 100 });
+  renderColorControls();
+  reset();
+});
+
+window.addEventListener('resize', () => { layoutCanvas(); render(); });
+
+// ---------- Main loop ----------
+let lastT = performance.now(), acc = 0;
+function frame(t) {
+  const dt = t - lastT;
+  lastT = t;
+  if (state.running) {
+    acc += dt;
+    const interval = 1000 / state.speed;
+    let n = 0;
+    while (acc >= interval && n < 10) { step(); acc -= interval; n++; }
+    if (n === 10) acc = 0;
+    if (n) { render(); updateStats(); }
+  } else acc = 0;
+  requestAnimationFrame(frame);
+}
+
+renderColorControls();
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
